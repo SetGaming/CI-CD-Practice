@@ -6,10 +6,34 @@ pipeline {
         timestamps()
     }
 
+    environment {
+        AWS_REGION    = 'us-east-1'
+        ECR_REGISTRY  = '992382545251.dkr.ecr.us-east-1.amazonaws.com'
+        ECR_REPOSITORY = '992382545251.dkr.ecr.us-east-1.amazonaws.com/avivhamoy/ci-cd-practice-app'
+        LOCAL_IMAGE   = 'ci-cd-practice-app:local'
+    }
+
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
+            }
+        }
+
+        stage('Prepare Image Metadata') {
+            steps {
+                script {
+                    env.GIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_TAG = "${env.BUILD_NUMBER}-${env.GIT_SHORT}"
+                    env.IMAGE_URI = "${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
+                }
+
+                echo "Image tag: ${env.IMAGE_TAG}"
+                echo "Image URI: ${env.IMAGE_URI}"
             }
         }
 
@@ -44,6 +68,29 @@ pipeline {
             steps {
                 sh '''
                     docker compose build
+                    docker image inspect "$LOCAL_IMAGE"
+                '''
+            }
+        }
+
+        stage('Login and Push to ECR') {
+            steps {
+                sh '''
+                    set -eu
+
+                    DOCKER_CONFIG_DIR="$(mktemp -d)"
+                    export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
+
+                    trap 'rm -rf "$DOCKER_CONFIG_DIR"' EXIT
+
+                    aws ecr get-login-password \
+                        --region "$AWS_REGION" |
+                    docker login \
+                        --username AWS \
+                        --password-stdin "$ECR_REGISTRY"
+
+                    docker tag "$LOCAL_IMAGE" "$IMAGE_URI"
+                    docker push "$IMAGE_URI"
                 '''
             }
         }
@@ -51,7 +98,8 @@ pipeline {
 
     post {
         success {
-            echo 'CI pipeline completed successfully.'
+            echo "CI pipeline completed successfully."
+            echo "Published image: ${env.IMAGE_URI}"
         }
 
         failure {
